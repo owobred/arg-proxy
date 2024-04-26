@@ -4,7 +4,7 @@
 3. place KV info into `wrangler.toml`
 4. place your cloudflare account id into `wrangler.toml`
 5. [create a discord bot](https://discord.com/developers/applications)
-6. add your discord bot token using `npx wrangler secret put DISCORD_TOKEN`, and then entering the token when prompted
+6. add your discord bot token using `npx wrangler secret put DISCORD_TOKEN`, and then enter the token when prompted
 7. run `npx wrangler deploy`
 
 ### Development
