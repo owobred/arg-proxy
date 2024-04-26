@@ -2,6 +2,10 @@ name = "arg-proxy"
 main = "build/worker/shim.mjs"
 compatibility_date = "2023-12-01"
 
+kv_namespaces = [
+  { binding = "<MY_NAMESPACE>", id = "<KV_ID>" }
+]
+
 [build]
 command = "cargo install -q worker-build && worker-build --release"
 

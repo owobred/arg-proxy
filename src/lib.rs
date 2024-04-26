@@ -1,12 +1,16 @@
 #![feature(iter_array_chunks)]
 
+use std::collections::HashMap;
+
 use worker::*;
 
 const DISCORD_USERAGENT: &'static str = "DiscordBot (github.com/owobred/arg-proxy; v0.0.1)";
 
 #[event(fetch)]
 async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
-    // let Ok(kv) = env.kv("arg_cdn") else { return Response::error("could not find kv store", 500) };
+    let Ok(kv) = env.kv("arg_cdn") else {
+        return Response::error("could not find kv store", 500);
+    };
 
     let Ok(url) = req.url() else {
         return Response::error("failed to parse url??", 500);
@@ -16,15 +20,15 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 
     let parsed = match parse_url(&url) {
         Ok(parsed) => parsed,
-        Err(error) => {
-            match error {
-                InnerError::ParseError(message) => return Response::error(format!("parse error: {message}"), 400),
-                other => {
-                    console_error!("unhandled error parsing discord url: {other:?}");
-                    return Response::error("unexpected error", 500);
-                },
+        Err(error) => match error {
+            InnerError::ParseError(message) => {
+                return Response::error(format!("parse error: {message}"), 400)
             }
-        }
+            other => {
+                console_error!("unhandled error parsing discord url: {other:?}");
+                return Response::error("unexpected error", 500);
+            }
+        },
     };
 
     Response::ok(format!("{parsed:?}"))
@@ -93,52 +97,13 @@ fn parse_url(url: &Url) -> std::result::Result<DiscordUrl, InnerError> {
         .next()
         .ok_or(InnerError::ParseError("missing filename section"))?;
 
-    console_log!("checking for params");
-    let has_all_params =
-        url.query_pairs().map(|(k, _)| k).collect::<Vec<_>>() == &["ex", "is", "hm"];
-
-    let expiry_params = if has_all_params {
-        console_log!("had expiry params");
-        let expiry = url
-            .query_pairs()
-            .find_map(|(k, v)| {
-                (k == "ex").then(|| {
-                    time::OffsetDateTime::from_unix_timestamp(i64::from_str_radix(&v, 16).unwrap())
-                        .unwrap()
-                })
-            })
-            .unwrap();
-        console_log!("had expiry {expiry:?}");
-        let is = url
-            .query_pairs()
-            .find_map(|(k, v)| {
-                (k == "is").then(|| {
-                    time::OffsetDateTime::from_unix_timestamp(i64::from_str_radix(&v, 16).unwrap())
-                        .unwrap()
-                })
-            })
-            .unwrap();
-        console_log!("had is {is:?}");
-        let hm = url
-            .query_pairs()
-            .find_map(|(k, v)| {
-                (k == "hm").then(|| {
-                    v.to_string()
-                        .chars()
-                        .array_chunks::<2>()
-                        .map(|v| {
-                            u8::from_str_radix(&v.into_iter().collect::<String>(), 16).unwrap()
-                        })
-                        .collect::<Vec<_>>()
-                })
-            })
-            .unwrap();
-        console_log!("had hm {hm:x?}");
-
-        Some(ExpiryParameters { expiry, is, hm })
-    } else {
-        console_log!("had no params");
-        None
+    let expiry_params = match parse_expiry_params(
+        url.query_pairs()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect(),
+    ) {
+        Some(params) => Some(params?),
+        None => None,
     };
 
     Ok(DiscordUrl {
@@ -147,6 +112,45 @@ fn parse_url(url: &Url) -> std::result::Result<DiscordUrl, InnerError> {
         filename: filename.to_string(),
         expiry_params,
     })
+}
+
+fn parse_expiry_params(
+    params: HashMap<String, String>,
+) -> Option<std::result::Result<ExpiryParameters, InnerError>> {
+    let expiry = match i64::from_str_radix(&params.get("ex")?, 16)
+        .map_err(|_| InnerError::ParseError("failed to parse ex parameter"))
+        .and_then(|val| {
+            time::OffsetDateTime::from_unix_timestamp(val)
+                .map_err(|_| InnerError::ParseError("failed to parse ex timestamp"))
+        }) {
+        Ok(v) => v,
+        Err(e) => return Some(Err(e)),
+    };
+
+    let is = match i64::from_str_radix(&params.get("is")?, 16)
+        .map_err(|_| InnerError::ParseError("failed to parse is parameter"))
+        .and_then(|val| {
+            time::OffsetDateTime::from_unix_timestamp(val)
+                .map_err(|_| InnerError::ParseError("failed to parse is timestamp"))
+        }) {
+        Ok(v) => v,
+        Err(e) => return Some(Err(e)),
+    };
+
+    let hm = match params
+        .get("hm")?
+        .to_string()
+        .chars()
+        .array_chunks::<2>()
+        .map(|v| u8::from_str_radix(&v.into_iter().collect::<String>(), 16))
+        .map(|v| v.map_err(|_| InnerError::ParseError("failed to parse hm byte")))
+        .collect::<std::result::Result<Vec<_>, _>>()
+    {
+        Ok(hm) => hm,
+        Err(err) => return Some(Err(err)),
+    };
+
+    Some(Ok(ExpiryParameters { expiry, is, hm }))
 }
 
 #[derive(Debug, thiserror::Error)]
