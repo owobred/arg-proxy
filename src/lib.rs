@@ -13,7 +13,6 @@ const EXPIRY_BUFFER: time::Duration = time::Duration::minutes(30);
 const HEADER_AUTHORIZATION: &'static str = "Authorization";
 const HEADER_CONTENT_TYPE: &'static str = "Content-Type";
 const HEADER_ACCEPT: &'static str = "Accept";
-const HEADER_REQUEST_INFO: &'static str = "X-Request-Info";
 
 #[event(fetch)]
 async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
@@ -52,23 +51,11 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
             let same = existing == Some(parsed.clone());
 
             if same {
-                return Response::redirect(parsed.to_string().parse().unwrap()).map(|mut r| {
-                    let headers = r.headers_mut();
-                    headers
-                        .append(HEADER_REQUEST_INFO, "already_stored")
-                        .unwrap();
-                    r
-                });
+                return Response::redirect(parsed.to_string().parse().unwrap());
                 // return Response::ok("url not yet expired (no update)");
             } else {
                 add_to_kv(&parsed, &kv).await?;
-                return Response::redirect(parsed.to_string().parse().unwrap()).map(|mut r| {
-                    let headers = r.headers_mut();
-                    headers
-                        .append(HEADER_REQUEST_INFO, "new_not_expired")
-                        .unwrap();
-                    r
-                });
+                return Response::redirect(parsed.to_string().parse().unwrap());
                 // return Response::ok("url not yet expired (update)");
             }
         }
@@ -96,11 +83,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
 
         if let Some(expiry) = &stored_url.expiry_params {
             if expiry.expiry - EXPIRY_BUFFER > now {
-                return Response::redirect(stored_url.to_string().parse().unwrap()).map(|mut r| {
-                    let headers = r.headers_mut();
-                    headers.append(HEADER_REQUEST_INFO, "stored_not_expired").unwrap();
-                    r
-                });
+                return Response::redirect(stored_url.to_string().parse().unwrap());
+                // return Response::ok(format!("url stored is not expired yet: {}", stored_url.to_string()));
             }
         }
     }
@@ -122,11 +106,8 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
     };
     add_to_kv(&new_parsed, &kv).await?;
 
-    return Response::redirect(new_parsed.to_string().parse().unwrap()).map(|mut r| {
-        let headers = r.headers_mut();
-        headers.append(HEADER_REQUEST_INFO, "expired").unwrap();
-        r
-    });
+    return Response::redirect(new_parsed.to_string().parse().unwrap());
+    // Response::ok(format!("fetched new url {}", new_parsed.to_string()))
 }
 
 async fn add_to_kv(url: &DiscordUrl, kv: &kv::KvStore) -> Result<()> {
