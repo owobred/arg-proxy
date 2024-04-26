@@ -1,0 +1,15 @@
+syntax = "proto3";
+package arg_proxy;
+
+message Stored {
+    string file_name = 1;
+    uint64 channel_id = 2;
+    uint64 attachment_id = 3;
+    optional Expiry expiry_info = 4;
+}
+
+message Expiry {
+    sint64 expiry_time_seconds = 1;
+    sint64 is_seconds = 2;
+    bytes hm = 3;
+}

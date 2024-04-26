@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use worker::*;
 
 const DISCORD_USERAGENT: &'static str = "DiscordBot (github.com/owobred/arg-proxy; v0.0.1)";
+const DSICORD_REFRESH_ROUTE: &'static str = "https://discord.com/api/v9/attachments/refresh-urls";
 
 #[event(fetch)]
 async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
@@ -72,7 +73,7 @@ impl DiscordUrl {
         let Ok(inner_url) = Url::parse(&url.path()[1..]) else {
             return Err(InnerError::ParseError("failed to parse inner url"));
         };
-    
+
         let mut path = inner_url
             .path_segments()
             .ok_or(InnerError::ParseError("missing attachment section"))?
@@ -90,7 +91,7 @@ impl DiscordUrl {
         let filename = path
             .next()
             .ok_or(InnerError::ParseError("missing filename section"))?;
-    
+
         let expiry_params = match ExpiryParameters::try_from_params_map(
             url.query_pairs()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
@@ -99,13 +100,17 @@ impl DiscordUrl {
             Some(params) => Some(params?),
             None => None,
         };
-    
+
         Ok(DiscordUrl {
             channel_id,
             attachment_id,
             filename: filename.to_string(),
             expiry_params,
         })
+    }
+
+    fn to_kv_key(&self) -> String {
+        format!("{:x}/{:x}", self.channel_id, self.attachment_id)
     }
 }
 
@@ -117,7 +122,9 @@ struct ExpiryParameters {
 }
 
 impl ExpiryParameters {
-    fn try_from_params_map(params: HashMap<String, String>) -> Option<std::result::Result<Self, InnerError>> {
+    fn try_from_params_map(
+        params: HashMap<String, String>,
+    ) -> Option<std::result::Result<Self, InnerError>> {
         let expiry = match i64::from_str_radix(&params.get("ex")?, 16)
             .map_err(|_| InnerError::ParseError("failed to parse ex parameter"))
             .and_then(|val| {
@@ -155,10 +162,74 @@ impl ExpiryParameters {
     }
 }
 
+struct StoredAttachment {
+    filename: String,
+    channel_id: u64,
+    attachment_id: u64,
+    latest_expiry_parameters: ExpiryParameters,
+}
+
 #[derive(Debug, thiserror::Error)]
 enum InnerError {
     #[error("failed to parse")]
     ParseError(&'static str),
     #[error("something unexpected happened")]
     Other,
+}
+
+mod proto {
+    use crate::{DiscordUrl, ExpiryParameters};
+
+    include!(concat!(env!("OUT_DIR"), "/arg_proxy.rs"));
+
+    impl From<DiscordUrl> for Stored {
+        fn from(value: DiscordUrl) -> Self {
+            Self {
+                file_name: value.filename,
+                channel_id: value.channel_id,
+                attachment_id: value.attachment_id,
+                expiry_info: value.expiry_params.map(|p| p.into()),
+            }
+        }
+    }
+
+    impl From<ExpiryParameters> for Expiry {
+        fn from(value: ExpiryParameters) -> Self {
+            Self {
+                expiry_time_seconds: value.expiry.unix_timestamp(),
+                is_seconds: value.is.unix_timestamp(),
+                hm: value.hm,
+            }
+        }
+    }
+}
+
+impl TryFrom<proto::Stored> for DiscordUrl {
+    type Error = time::Error;
+
+    fn try_from(value: proto::Stored) -> std::result::Result<Self, Self::Error> {
+        let expiry_params = match value.expiry_info {
+            Some(params) => Some(params.try_into()?),
+            None => None,
+        };
+
+        Ok(Self {
+            channel_id: value.channel_id,
+            attachment_id: value.attachment_id,
+            filename: value.file_name,
+            expiry_params,
+        })
+    }
+}
+
+impl TryFrom<proto::Expiry> for ExpiryParameters {
+    type Error = time::Error;
+
+    fn try_from(value: proto::Expiry) -> std::result::Result<Self, Self::Error> {
+        Ok(Self {
+            expiry: time::OffsetDateTime::from_unix_timestamp(value.expiry_time_seconds)?,
+            is: time::OffsetDateTime::from_unix_timestamp(value.is_seconds)?,
+            hm: value.hm,
+        })
+    }
 }

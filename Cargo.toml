@@ -7,13 +7,16 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
+prost = "0.12.4"
 reqwest = "0.12.4"
 serde = { version = "1.0.198", features = ["derive"] }
 thiserror = "1.0.59"
 time = { version = "0.3.36", features = ["wasm-bindgen"] }
-# tracing = "0.1.40"
 url = "2.5.0"
 worker = "0.0.18"
+
+[build-dependencies]
+prost-build = "0.12.4"
 
 [profile.release]
 opt-level = "s" # optimize for size in release builds
