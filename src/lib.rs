@@ -2,10 +2,17 @@
 
 use std::collections::HashMap;
 
+use prost::Message;
+use serde::{Deserialize, Serialize};
 use worker::*;
 
 const DISCORD_USERAGENT: &'static str = "DiscordBot (github.com/owobred/arg-proxy; v0.0.1)";
-const DSICORD_REFRESH_ROUTE: &'static str = "https://discord.com/api/v9/attachments/refresh-urls";
+const DISCORD_REFRESH_ROUTE: &'static str = "https://discord.com/api/v9/attachments/refresh-urls";
+
+const EXPIRY_BUFFER: time::Duration = time::Duration::minutes(30);
+const HEADER_AUTHORIZATION: &'static str = "Authorization";
+const HEADER_CONTENT_TYPE: &'static str = "Content-Type";
+const HEADER_ACCEPT: &'static str = "Accept";
 
 #[event(fetch)]
 async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
@@ -32,10 +39,130 @@ async fn main(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         },
     };
 
-    Response::ok(format!("{parsed:?}"))
+    if let Some(expiry) = &parsed.expiry_params {
+        if expiry.expiry - EXPIRY_BUFFER > now {
+            let existing: Option<DiscordUrl> = kv
+                .get(&parsed.to_kv_key())
+                .bytes()
+                .await?
+                .map(|bytes| proto::Stored::decode(std::io::Cursor::new(bytes)).unwrap())
+                .map(|stored| stored.try_into().unwrap());
+
+            let same = existing == Some(parsed.clone());
+
+            if same {
+                return Response::redirect(parsed.to_string().parse().unwrap());
+                // return Response::ok("url not yet expired (no update)");
+            } else {
+                add_to_kv(&parsed, &kv).await?;
+                return Response::redirect(parsed.to_string().parse().unwrap());
+                // return Response::ok("url not yet expired (update)");
+            }
+        }
+    }
+
+    let from_kv = kv.get(&parsed.to_kv_key()).bytes().await?;
+
+    if let Some(bytes) = from_kv {
+        let stored = match proto::Stored::decode(std::io::Cursor::new(bytes)) {
+            Ok(stored) => stored,
+            Err(error) => {
+                console_error!("failed to decode value from kv {error:?}");
+
+                return Response::error("internal server error", 500);
+            }
+        };
+
+        let stored_url: DiscordUrl = match stored.try_into() {
+            Ok(url) => url,
+            Err(error) => {
+                console_error!("failed to convert from stored to url: {error:?}");
+                return Response::error("internal server error", 500);
+            }
+        };
+
+        if let Some(expiry) = &stored_url.expiry_params {
+            if expiry.expiry - EXPIRY_BUFFER > now {
+                return Response::redirect(stored_url.to_string().parse().unwrap());
+                // return Response::ok(format!("url stored is not expired yet: {}", stored_url.to_string()));
+            }
+        }
+    }
+
+    let discord_token = env.secret("DISCORD_TOKEN")?.to_string();
+    let new_url = match fetch_new_url(&parsed, &discord_token).await {
+        Ok(urls) => urls.refreshed_urls.into_iter().next().unwrap().refreshed,
+        Err(error) => {
+            console_error!("failed to fetch new url: {error}");
+            return Response::error("internal server error", 500);
+        }
+    };
+    let new_parsed = match DiscordUrl::try_from_url(&Url::parse(&new_url)?) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            console_error!("failed to parse new discord attachment url: {error:?}");
+            return Response::error("internal server error", 500);
+        }
+    };
+    add_to_kv(&new_parsed, &kv).await?;
+
+    return Response::redirect(new_parsed.to_string().parse().unwrap());
+    // Response::ok(format!("fetched new url {}", new_parsed.to_string()))
 }
 
-#[derive(Debug)]
+async fn add_to_kv(url: &DiscordUrl, kv: &kv::KvStore) -> Result<()> {
+    let stored: proto::Stored = url.to_owned().try_into().unwrap();
+    let mut stored_buf = Vec::new();
+    stored.encode(&mut stored_buf).unwrap();
+
+    kv.put_bytes(&url.to_kv_key(), &stored_buf)?
+        .execute()
+        .await?;
+    Ok(())
+}
+
+async fn fetch_new_url(
+    url: &DiscordUrl,
+    token: &str,
+) -> std::result::Result<DiscordRenewAttachmentResponse, InnerError> {
+    let request_body = DiscordRenewAttachmentRequest {
+        attachment_urls: vec![url.to_string()],
+    };
+
+    let client = reqwest::Client::builder()
+        .user_agent(DISCORD_USERAGENT)
+        .build()?;
+    let response: DiscordRenewAttachmentResponse = client
+        .post(DISCORD_REFRESH_ROUTE)
+        .body(serde_json::to_string(&request_body)?)
+        .header(HEADER_AUTHORIZATION, format!("Bot {token}"))
+        .header(HEADER_CONTENT_TYPE, "application/json")
+        .header(HEADER_ACCEPT, "application/json")
+        .send()
+        .await?
+        .json()
+        .await?;
+
+    Ok(response)
+}
+
+#[derive(Debug, Serialize)]
+struct DiscordRenewAttachmentRequest {
+    attachment_urls: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DiscordRenewAttachmentResponse {
+    refreshed_urls: Vec<DiscordRefreshedUrl>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DiscordRefreshedUrl {
+    // original: String,
+    refreshed: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct DiscordUrl {
     channel_id: u64,
     attachment_id: u64,
@@ -69,12 +196,8 @@ impl ToString for DiscordUrl {
 }
 
 impl DiscordUrl {
-    fn try_from_full_url(url: &Url) -> std::result::Result<DiscordUrl, InnerError> {
-        let Ok(inner_url) = Url::parse(&url.path()[1..]) else {
-            return Err(InnerError::ParseError("failed to parse inner url"));
-        };
-
-        let mut path = inner_url
+    fn try_from_url(url: &Url) -> std::result::Result<DiscordUrl, InnerError> {
+        let mut path = url
             .path_segments()
             .ok_or(InnerError::ParseError("missing attachment section"))?
             .skip(1);
@@ -109,12 +232,22 @@ impl DiscordUrl {
         })
     }
 
+    fn try_from_full_url(url: &Url) -> std::result::Result<DiscordUrl, InnerError> {
+        let Ok(mut inner_url) = Url::parse(&url.path()[1..]) else {
+            return Err(InnerError::ParseError("failed to parse inner url"));
+        };
+
+        inner_url.set_query(url.query());
+
+        Self::try_from_url(&inner_url)
+    }
+
     fn to_kv_key(&self) -> String {
         format!("{:x}/{:x}", self.channel_id, self.attachment_id)
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ExpiryParameters {
     expiry: time::OffsetDateTime,
     is: time::OffsetDateTime,
@@ -173,10 +306,13 @@ struct StoredAttachment {
 enum InnerError {
     #[error("failed to parse")]
     ParseError(&'static str),
+    #[error("problem with request")]
+    RequestError(#[from] reqwest::Error),
+    #[error("problem with serde_json")]
+    SerdeJsonError(#[from] serde_json::Error),
     #[error("something unexpected happened")]
     Other,
 }
-
 mod proto {
     use crate::{DiscordUrl, ExpiryParameters};
 
