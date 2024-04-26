@@ -3,10 +3,11 @@
 2. create a new cloudflare KV namespace named `arg_cdn`
 3. place KV info into `wrangler.toml`
 4. place your cloudflare account id into `wrangler.toml`
-5. add your discord token using `npx wrangler secret put DISCORD_TOKEN`, and then entering the token when prompted
-6. run `npx wrangler deploy`
+5. [create a discord bot](https://discord.com/developers/applications)
+6. add your discord bot token using `npx wrangler secret put DISCORD_TOKEN`, and then entering the token when prompted
+7. run `npx wrangler deploy`
 
 ### Development
 1. ensure you have the wasm32-unknown-unknown target installed for rust
-2. add discord token to `.dev.vars`
+2. add discord bot token to `.dev.vars`
 3. run `npx wrangler dev`
