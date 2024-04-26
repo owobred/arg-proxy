@@ -1,5 +1,5 @@
 [package]
-name = "worker-rust"
+name = "arg-proxy"
 version = "0.1.0"
 edition = "2021"
 
@@ -8,6 +8,8 @@ crate-type = ["cdylib"]
 
 [dependencies]
 reqwest = "0.12.4"
+serde = { version = "1.0.198", features = ["derive"] }
+thiserror = "1.0.59"
 time = { version = "0.3.36", features = ["wasm-bindgen"] }
 # tracing = "0.1.40"
 url = "2.5.0"
