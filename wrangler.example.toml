@@ -4,7 +4,7 @@ compatibility_date = "2023-12-01"
 account_id = "<ACCOUNT_ID>"
 
 kv_namespaces = [
-  { binding = "<MY_NAMESPACE>", id = "<KV_ID>" }
+  { binding = "arg_cdn", id = "<KV_ID>" }
 ]
 
 [build]
