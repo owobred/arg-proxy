@@ -1,0 +1,20 @@
+[package]
+name = "worker-rust"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+reqwest = "0.12.4"
+time = { version = "0.3.36", features = ["wasm-bindgen"] }
+# tracing = "0.1.40"
+url = "2.5.0"
+worker = "0.0.18"
+
+[profile.release]
+opt-level = "s" # optimize for size in release builds
+lto = true
+strip = true
+codegen-units = 1
